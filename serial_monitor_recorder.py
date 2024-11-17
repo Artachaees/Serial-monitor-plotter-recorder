@@ -54,7 +54,7 @@ class SerialReader(QObject):
     def write_data(self, data):
         # Send data to the serial port
         if self.serial_port.isOpen():
-            self.serial_port.write(data.encode('utf-8'))
+            self.serial_port.write(data)
 
 # Main GUI Class
 class SerialMonitorPlotter(QMainWindow):
@@ -68,15 +68,15 @@ class SerialMonitorPlotter(QMainWindow):
         self.serial_plot_queue = queue.Queue(300)
         self.time_queue = queue.Queue(300)
         self.save_samples = 0
-        self.axes_max_value = 150000
-        self.axes_min_value = 1000
+        self.axes_max_value = 10000
+        self.axes_min_value = 0
         ## new method
         self.serial_reader = SerialReader()
         # self.serial_port.readyRead.connect(self.on_data_received)  # Connect the callback for data reception
         self.lastbyte = b''
         self.receivedLines = 0
         self.timeout = 100000
-        self.avoid_first_data = 100
+        self.avoid_first_data = 5
         self.setWindowTitle("Serial Monitor and Plotter")
         self.set_normalized_geometry(0.2, 0.2, 0.6, 0.6)
         
@@ -144,7 +144,7 @@ class SerialMonitorPlotter(QMainWindow):
         self.monitor_text.setReadOnly(True)
         self.send_text = QLineEdit()
         self.send_button = QPushButton("Send")
-        # self.send_button.clicked.connect(self.send_data)
+        self.send_button.clicked.connect(self.send_data)
         self.autoScroll = QCheckBox("Auto Scroll")
         self.autoScroll.setChecked(True)
 
@@ -168,19 +168,22 @@ class SerialMonitorPlotter(QMainWindow):
 
         self.slider_lower = QtWidgets.QSlider(Qt.Vertical)
         self.slider_upper = QtWidgets.QSlider(Qt.Vertical)
+        self.slider_Haxis = QtWidgets.QSlider(Qt.Horizontal)
 
         # Set the range for both sliders
         self.slider_lower.setRange(self.axes_min_value, self.axes_max_value)
         self.slider_upper.setRange(self.axes_min_value, self.axes_max_value)
-
+        self.slider_Haxis.setRange(-300, -10)
+        self.slider_Haxis.setSingleStep(1)
         # Set initial positions
         self.slider_lower.setValue(self.axes_min_value)
         self.slider_upper.setValue(self.axes_max_value)
-
+        self.slider_Haxis.setValue(-300)
         # Connect sliders to update the range
         
         self.slider_upper.valueChanged.connect(self.update_axes_range)
         self.slider_lower.valueChanged.connect(self.update_axes_range)
+        # self.slider_Haxis.valueChanged.connect(self.update_Xaxes_range)
         
         self.bl_val = QLineEdit()
         self.bl_val.setValidator(QDoubleValidator())
@@ -190,12 +193,13 @@ class SerialMonitorPlotter(QMainWindow):
 
         plot_tab = QWidget()
         plot_layout = QVBoxLayout(plot_tab)
+        
         axes_layout = QHBoxLayout()
         axes_layout.addWidget(self.canvas)
         axes_layout.addWidget(self.slider_lower)
         axes_layout.addWidget(self.slider_upper)
         plot_layout.addLayout(axes_layout)
-
+        plot_layout.addWidget(self.slider_Haxis)
 
         bl_layout = QHBoxLayout()
         
@@ -283,13 +287,7 @@ class SerialMonitorPlotter(QMainWindow):
                 port_name = self.port_combo.currentText()
                 baudrate = int(self.baudrate_combo.currentText())
                 self.serial_reader.data_received.connect(self.Handle_data)
-                self.serial_data_queue.maxsize = 1024
                 
-                while self.serial_data_queue.qsize() >0:
-                    try:
-                        self.serial_data_queue.get_nowait()
-                    except:
-                        pass
                 # Open the serial port
                 if self.serial_reader.open(port_name=port_name,baud_rate=baudrate):
                     self.connect_button.setText("Disconnect")
@@ -297,10 +295,9 @@ class SerialMonitorPlotter(QMainWindow):
                     self.baudrate_combo.setEnabled(False)
                     self.terminator_combo.setEnabled(False)
                     self.start_time = float(time.time())
-                    self.serial_data_queue = queue.Queue()
                     self.serial_plot_queue = queue.Queue(300)
                     self.time_queue = queue.Queue(300)
-                    self.avoid_first_data = 100
+                    self.avoid_first_data = 10
                     self.variable_names = []
                     self.monitor_text.clear()
                 else:
@@ -324,110 +321,35 @@ class SerialMonitorPlotter(QMainWindow):
         for line in data:
             try:
                 self.monitor_text.appendPlainText(line.decode(errors='ignore'))
+                if self.autoScroll.isChecked():
+                    self.monitor_text.ensureCursorVisible()
+                if (b':' in line):
+                    if(b'cmd' in line):
+                        pass
+                    else:
+                        if (self.avoid_first_data > 0) :
+                           self.avoid_first_data -= 1
+                        else: 
+                            decoded_line = self.decode_vars(line.decode())
+                            if self.serial_plot_queue.full():
+                                self.serial_plot_queue.get_nowait()
+                                self.time_queue.get_nowait()
+                            self.time_queue.put_nowait(float(decoded_line.pop('time',float(time.time())-self.start_time)))
+                            self.serial_plot_queue.put_nowait(decoded_line)
+                            if(self.save_samples <300):
+                                self.save_samples += 1
+
+
             except Exception as e:
-                self.monitor_text.append(f"Error: {e}")
-
-            
-        
-        # while ( self.receivedLines >0):
-        #     data = b''
-        #     while self.terminator_combo.currentData() not in data:
-        #         data += self.serial_data_queue.get_nowait()
-        #     data = data.strip(self.terminator_combo.currentData()).decode(errors='ignore')
-        #     self.monitor_text.appendPlainText(data)
-        #     # print(self.monitor_text.depth())
-        #     if self.autoScroll.isChecked():
-        #         self.monitor_text.ensureCursorVisible()
-        #     self.receivedLines -= 1
-        #     try:
-        #         if self.avoid_first_data > 0 :
-        #            self.avoid_first_data -= 1
-        #         else: 
-        #             decoded_data = self.decode_vars(data)
-        #             if self.serial_plot_queue.full():
-        #                 self.serial_plot_queue.get_nowait()
-        #                 self.time_queue.get_nowait()
-        #             self.serial_plot_queue.put_nowait(decoded_data)
-        #             self.time_queue.put_nowait(float(time.time())-self.start_time)
-        #             self.save_samples += 1
-                
-        #     except Exception as e:
-        #         self.monitor_text.append(f"Error: {e}")
-                
-        # self.serial_port.readyRead.connect(self.on_data_received)  # Connect the callback for data reception
-        # # Update the plot if plotting is active
-        # if self.plotting:
-        #     self.update_plot(data)
-    
-
-    # def on_data_received(self): #new for usb virtual COM
-    #     # Read and decode the data
-    #     self.serial_port.readyRead.disconnect()
-    #     tic = time.time().__float__()
-    #     # print(self.terminator_combo.currentText())
-    #     while time.time().__float__() < tic + 0.01:
-    #         if self.serial_port.bytesAvailable()>0:
-    #             a = self.serial_port.readAll().data()
-    #             # print(a)
-    #             # print(a.split(b'\n'))
-    #             # print(f"Available bytes:{self.serial_port.bytesAvailable()}")
-    #             # try:
-    #             #     self.serial_data_queue.put_nowait(a)
-    #             # except:
-    #             #     pass
-    #             tic = time.time().__float__()                
-    #         else:
-    #             time.sleep(0.005)
-                
-    #         # if self.terminator_combo.currentData() and self.terminator_combo.currentData()  in self.lastbyte+a:
-    #         #     self.lastbyte = b''
-    #         #     self.receivedLines += 1
-    #         #     break
-    #         # else:
-    #         #     self.lastbyte = a[-1].to_bytes()
+                self.monitor_text.appendPlainText(f"Error: {e}")
 
 
-    #     else:
-    #         pass
-    #         # print("timeout")
-    #         # print(self.serial_port.bytesAvailable())
-
-            
-        
-    #     # while ( self.receivedLines >0):
-    #     #     data = b''
-    #     #     while self.terminator_combo.currentData() not in data:
-    #     #         data += self.serial_data_queue.get_nowait()
-    #     #     data = data.strip(self.terminator_combo.currentData()).decode(errors='ignore')
-    #     #     self.monitor_text.appendPlainText(data)
-    #     #     # print(self.monitor_text.depth())
-    #     #     if self.autoScroll.isChecked():
-    #     #         self.monitor_text.ensureCursorVisible()
-    #     #     self.receivedLines -= 1
-    #     #     try:
-    #     #         if self.avoid_first_data > 0 :
-    #     #            self.avoid_first_data -= 1
-    #     #         else: 
-    #     #             decoded_data = self.decode_vars(data)
-    #     #             if self.serial_plot_queue.full():
-    #     #                 self.serial_plot_queue.get_nowait()
-    #     #                 self.time_queue.get_nowait()
-    #     #             self.serial_plot_queue.put_nowait(decoded_data)
-    #     #             self.time_queue.put_nowait(float(time.time())-self.start_time)
-    #     #             self.save_samples += 1
-                
-    #     #     except Exception as e:
-    #     #         self.monitor_text.append(f"Error: {e}")
-                
-    #     self.serial_port.readyRead.connect(self.on_data_received)  # Connect the callback for data reception
-    #     # # Update the plot if plotting is active
-    #     # if self.plotting:
-    #     #     self.update_plot(data)
+           
 
 
     def toggle_plotting(self):
         if self.plot_button.isChecked():
-            self.timer.start(50)
+            self.timer.start(100)
         else:
             self.timer.stop()
         
@@ -439,11 +361,18 @@ class SerialMonitorPlotter(QMainWindow):
         if self.recording:
             self.recording=False
             self.record_button.setText("Start Recording")
+
             self.timer_saver.stop()
-            self.csvfile.close()        
+            self.csvfile.close()     
+            self.user_ch1.setEnabled(True)
+            self.user_ch2.setEnabled(True) 
+            self.user_ch3.setEnabled(True)    
         else:
             self.recording=True
             self.record_button.setText("Stop Recording")
+            self.user_ch1.setEnabled(False)
+            self.user_ch2.setEnabled(False) 
+            self.user_ch3.setEnabled(False)  
             self.timer_saver.start(100)
             self.csvfile = open(self.file_path_edit.text(),'a',newline='')
 
@@ -461,6 +390,7 @@ class SerialMonitorPlotter(QMainWindow):
     def update_plot(self): #new
         
         if not self.serial_plot_queue.empty():
+
             # Extract data from the queue
             temp_data = list(self.serial_plot_queue.queue)  # Convert queue to list
             self.variable_names = temp_data[-1].keys()
@@ -469,9 +399,9 @@ class SerialMonitorPlotter(QMainWindow):
             for var in self.variable_names:
                 self.plot_values[var] = [entry[var] for entry in temp_data if var in entry.keys()]
             self.time_labels = list(self.time_queue.queue)
+            # print(self.time_labels)
             # Clear the current plot and redraw
             # self.ax.clear()
-            
             # Plot each variable as a line
             for var in self.variable_names:
                 if var not in self.plots.keys():
@@ -479,12 +409,12 @@ class SerialMonitorPlotter(QMainWindow):
                 
                 self.plots[var].set_data((self.time_labels,self.plot_values[var]))
             
-            self.ax.set_xlim(min(self.time_labels), max(self.time_labels))
+            self.ax.set_xlim(self.time_labels[max(self.slider_Haxis.value(),-len(self.time_labels))], self.time_labels[-1])
             # Set labels and title
             self.ax.set_xlabel('time(s)')
             self.ax.set_ylabel('Value')
             self.ax.set_title('Real-time Data Plot')
-            self.ax.grid('on')
+            self.ax.grid('on','both')
             
             # Add legend
             self.ax.legend(loc='upper left')
@@ -500,7 +430,7 @@ class SerialMonitorPlotter(QMainWindow):
         self.plots['bl'] = self.ax.axhline(bl,linestyle = '--',label = 'Base line',color = 'r')
         self.canvas.draw()
 
-    def decode_vars(self,data:str):
+    def decode_vars(self,data) -> dict:
         pattern = r'(\w+):\s*([\d.]+)'
         tokens = re.findall(pattern, data)
         data_dict = {name: float(value) for name, value in tokens}
@@ -541,14 +471,22 @@ class SerialMonitorPlotter(QMainWindow):
         if (not self.csvfile.closed):
             if(self.save_samples >= 100):
                 writer = csv.writer(self.csvfile)
-                rowlist = [self.time_labels[-100:]] + [self.plot_values[var][-100:] for var in self.variable_names]
-                rowlist += [[float(self.user_var1.text()) for _ in range(100)]]
-                rowlist += [[float(self.user_var2.text()) for _ in range(100)]]
-                rowlist += [[float(self.user_var3.text()) for _ in range(100)]]
+                rowlist = [self.time_labels[-self.save_samples:]] + [self.plot_values[var][-self.save_samples:] for var in self.variable_names]
+                if (self.user_ch1.isChecked()):
+                    rowlist += [[float(self.user_var1.text()) for _ in range(self.save_samples)]]
+                if (self.user_ch2.isChecked()):
+                    rowlist += [[float(self.user_var2.text()) for _ in range(self.save_samples)]]
+                if (self.user_ch3.isChecked()):
+                    rowlist += [[float(self.user_var3.text()) for _ in range(self.save_samples)]]
                 writer.writerows(zip(*rowlist))
-                self.save_samples -= 100
+                self.save_samples = 0
 
 
+    def send_data(self):
+        data = self.send_text.text().encode("utf-8")
+        data += self.terminator_combo.currentData()
+        self.serial_reader.write_data(data)
+        self.send_text.clear()
 
 # Run Application
 app = QApplication(sys.argv)
