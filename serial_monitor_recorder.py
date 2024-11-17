@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QComboBox, QPushButton, QTextEdit,
     QVBoxLayout, QHBoxLayout, QCheckBox, QFileDialog, QTabWidget, QLineEdit,QDesktopWidget,
     QSizePolicy,QSpacerItem,QPlainTextEdit,QGridLayout)
-from PyQt5.QtCore import QTimer,Qt, QIODevice
+from PyQt5.QtCore import QTimer,Qt, QIODevice,QObject,pyqtSignal
 from PyQt5.QtGui import QDoubleValidator
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -23,6 +23,38 @@ serial_conn = None
 data_running = False
 serial_data_queue = queue.Queue()
 
+class SerialReader(QObject):
+    data_received = pyqtSignal(bytes)
+
+    def __init__(self):
+        super().__init__()
+        self.serial_port = QtSerialPort.QSerialPort()
+
+        self.serial_port.readyRead.connect(self.read_data)
+
+    def open(self, port_name, baud_rate):
+        # Open the serial port for read and write
+        self.serial_port.setPortName(port_name)
+        self.serial_port.setBaudRate(baud_rate)
+        if not self.serial_port.open(QIODevice.ReadWrite):
+            print("Failed to open serial port.")
+            return False
+        return True
+
+    def close(self):
+        # Close the serial port
+        self.serial_port.close()
+
+    def read_data(self):
+        # Process incoming data as soon as it is received
+        while self.serial_port.canReadLine():
+            data = self.serial_port.readAll().data()
+            self.data_received.emit(data)  # Emit the data to the main thread
+
+    def write_data(self, data):
+        # Send data to the serial port
+        if self.serial_port.isOpen():
+            self.serial_port.write(data.encode('utf-8'))
 
 # Main GUI Class
 class SerialMonitorPlotter(QMainWindow):
@@ -39,8 +71,8 @@ class SerialMonitorPlotter(QMainWindow):
         self.axes_max_value = 150000
         self.axes_min_value = 1000
         ## new method
-        self.serial_port = QtSerialPort.QSerialPort()
-        self.serial_port.readyRead.connect(self.on_data_received)  # Connect the callback for data reception
+        self.serial_reader = SerialReader()
+        # self.serial_port.readyRead.connect(self.on_data_received)  # Connect the callback for data reception
         self.lastbyte = b''
         self.receivedLines = 0
         self.timeout = 100000
@@ -245,13 +277,12 @@ class SerialMonitorPlotter(QMainWindow):
 
 
     def toggle_connection(self):
-        try:
-            if not self.serial_port.isOpen():
+        # try:
+            if not self.serial_reader.serial_port.isOpen():
                 # Configure the serial port
                 port_name = self.port_combo.currentText()
                 baudrate = int(self.baudrate_combo.currentText())
-                self.serial_port.setPortName(port_name)
-                self.serial_port.setBaudRate(baudrate)
+                self.serial_reader.data_received.connect(self.Handle_data)
                 self.serial_data_queue.maxsize = 1024
                 
                 while self.serial_data_queue.qsize() >0:
@@ -260,7 +291,7 @@ class SerialMonitorPlotter(QMainWindow):
                     except:
                         pass
                 # Open the serial port
-                if self.serial_port.open(QIODevice.ReadWrite):
+                if self.serial_reader.open(port_name=port_name,baud_rate=baudrate):
                     self.connect_button.setText("Disconnect")
                     self.port_combo.setEnabled(False)
                     self.baudrate_combo.setEnabled(False)
@@ -276,72 +307,54 @@ class SerialMonitorPlotter(QMainWindow):
                     self.monitor_text_field.append("Failed to open port")
             else:
                 # Close the serial port
-                self.serial_port.readyRead.disconnect()
-                self.serial_port.close()
+                self.serial_reader.data_received.disconnect()
+                self.serial_reader.close()
                 self.connect_button.setText("Connect")
                 self.port_combo.setEnabled(True)
                 self.baudrate_combo.setEnabled(True)
                 self.terminator_combo.setEnabled(True)
-        except Exception as e:
-            self.monitor_text.appendPlainText(f"Error: {e}")
+        # except Exception as e:
+        #     self.monitor_text.appendPlainText(f"Error: {e}")
 
-    def on_data_received(self): #old, working well for arduino which sends character one at each transmition
+    def Handle_data(self,data): #old, working well for arduino which sends character one at each transmition
         # Read and decode the data
-        print("new data")
-        self.serial_port.readyRead.disconnect()
-        tic = time.time().__float__()
-        # print(self.terminator_combo.currentText())
-        while time.time().__float__() < tic + 0.01:
-            if self.serial_port.bytesAvailable()>0:
-                a = self.serial_port.read(1)
-                try:
-                    self.serial_data_queue.put_nowait(a)
-                except:
-                    pass
-                tic = time.time().__float__()                
-            else:
-                time.sleep(0.005)
-                
-            if self.terminator_combo.currentData() and self.terminator_combo.currentData()  in self.lastbyte+a:
-                self.lastbyte = b''
-                self.receivedLines += 1
-                break
-            else:
-                self.lastbyte = a[-1].to_bytes()
-
-
-        else:
-            print("timeout")
-            print(self.serial_port.bytesAvailable())
+        if self.terminator_combo.currentData():
+            data = data.split(self.terminator_combo.currentData())[:-1]
+            
+        for line in data:
+            try:
+                self.monitor_text.appendPlainText(line.decode(errors='ignore'))
+            except Exception as e:
+                self.monitor_text.append(f"Error: {e}")
 
             
         
-        while ( self.receivedLines >0):
-            data = b''
-            while self.terminator_combo.currentData() not in data:
-                data += self.serial_data_queue.get_nowait()
-            data = data.strip(self.terminator_combo.currentData()).decode(errors='ignore')
-            self.monitor_text.appendPlainText(data)
-            # print(self.monitor_text.depth())
-            if self.autoScroll.isChecked():
-                self.monitor_text.ensureCursorVisible()
-            self.receivedLines -= 1
-            try:
-                if self.avoid_first_data > 0 :
-                   self.avoid_first_data -= 1
-                else: 
-                    decoded_data = self.decode_vars(data)
-                    if self.serial_plot_queue.full():
-                        self.serial_plot_queue.get_nowait()
-                        self.time_queue.get_nowait()
-                    self.serial_plot_queue.put_nowait(decoded_data)
-                    self.time_queue.put_nowait(float(time.time())-self.start_time)
-                    self.save_samples += 1
+        # while ( self.receivedLines >0):
+        #     data = b''
+        #     while self.terminator_combo.currentData() not in data:
+        #         data += self.serial_data_queue.get_nowait()
+        #     data = data.strip(self.terminator_combo.currentData()).decode(errors='ignore')
+        #     self.monitor_text.appendPlainText(data)
+        #     # print(self.monitor_text.depth())
+        #     if self.autoScroll.isChecked():
+        #         self.monitor_text.ensureCursorVisible()
+        #     self.receivedLines -= 1
+        #     try:
+        #         if self.avoid_first_data > 0 :
+        #            self.avoid_first_data -= 1
+        #         else: 
+        #             decoded_data = self.decode_vars(data)
+        #             if self.serial_plot_queue.full():
+        #                 self.serial_plot_queue.get_nowait()
+        #                 self.time_queue.get_nowait()
+        #             self.serial_plot_queue.put_nowait(decoded_data)
+        #             self.time_queue.put_nowait(float(time.time())-self.start_time)
+        #             self.save_samples += 1
                 
-            except Exception as e:
-                self.monitor_text.append(f"Error: {e}")
+        #     except Exception as e:
+        #         self.monitor_text.append(f"Error: {e}")
                 
-        self.serial_port.readyRead.connect(self.on_data_received)  # Connect the callback for data reception
+        # self.serial_port.readyRead.connect(self.on_data_received)  # Connect the callback for data reception
         # # Update the plot if plotting is active
         # if self.plotting:
         #     self.update_plot(data)
