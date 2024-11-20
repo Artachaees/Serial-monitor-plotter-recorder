@@ -39,10 +39,12 @@ class SerialReader(QObject):
         if not self.serial_port.open(QIODevice.ReadWrite):
             print("Failed to open serial port.")
             return False
+        self.serial_port.setDataTerminalReady(True)
         return True
 
     def close(self):
         # Close the serial port
+        self.serial_port.setDataTerminalReady(False)
         self.serial_port.close()
 
     def read_data(self):
@@ -68,8 +70,8 @@ class SerialMonitorPlotter(QMainWindow):
         self.serial_plot_queue = queue.Queue(300)
         self.time_queue = queue.Queue(300)
         self.save_samples = 0
-        self.axes_max_value = 10000
-        self.axes_min_value = 0
+        self.axes_max_value = 150000
+        self.axes_min_value = 60000
         ## new method
         self.serial_reader = SerialReader()
         # self.serial_port.readyRead.connect(self.on_data_received)  # Connect the callback for data reception
@@ -331,13 +333,14 @@ class SerialMonitorPlotter(QMainWindow):
                            self.avoid_first_data -= 1
                         else: 
                             decoded_line = self.decode_vars(line.decode())
-                            if self.serial_plot_queue.full():
-                                self.serial_plot_queue.get_nowait()
-                                self.time_queue.get_nowait()
-                            self.time_queue.put_nowait(float(decoded_line.pop('time',float(time.time())-self.start_time)))
-                            self.serial_plot_queue.put_nowait(decoded_line)
-                            if(self.save_samples <300):
-                                self.save_samples += 1
+                            if(decoded_line):
+                                if self.serial_plot_queue.full():
+                                    self.serial_plot_queue.get_nowait()
+                                    self.time_queue.get_nowait()
+                                self.time_queue.put_nowait(float(decoded_line.pop('time',float(time.time())-self.start_time)))
+                                self.serial_plot_queue.put_nowait(decoded_line)
+                                if(self.save_samples <300):
+                                    self.save_samples += 1
 
 
             except Exception as e:
